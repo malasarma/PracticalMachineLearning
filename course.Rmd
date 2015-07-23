@@ -1,0 +1,157 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Mala Sarma"
+date: "July 20, 2015"
+output: html_document
+---
+
+# Introduction  
+
+With the advent of devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit*, it is relatively easy to gather information about physical activity. However, the challenge is to determine if a physical activity was executed with the correct form. The goal of this project is to predict the manner in which the exercise was done, using the data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. This is the *classe* variable in the training set, and the goal is to create a model for *classe* to fit the training data. This prediction model will then be used to predict 20 different test cases.
+
+
+# Data Exploration and Analysis 
+
+The data is read from the 2 csv files provided for training and testing and stored in two separate tables. The missing values are flagged as *NA*. From the prelimiary analysis, it looks like the training data has **19622 rows** of data with **160 variables**.
+
+```{r load_data}
+training <- read.csv("pml-training.csv", as.is = TRUE, na.strings = c("NA", "#DIV/0!", ""))
+testing <- read.csv("pml-testing.csv", as.is = TRUE, na.strings = c("NA", "#DIV/0!", ""))
+```
+
+On further analysis, two things are apparent:  
+1. **There are many variables for which there is insufficient data.**  
+        To address this, the training and testing data sets were pruned off all the variables that were populated with less than 1% of values. In other words, if a particular column variable had less than 1% of known values(< 196.22 values), that variable was removed, as it was not deemed to be relevant in building the prediction model.  
+2. **There are many values with** ***NA***  
+        For the *NA* values, the *impute* function was used to populate them with the mean value. 
+
+
+```{r pre_process, echo=FALSE}
+library(e1071)
+#
+# as there are many NA values in the data, preProcess to:
+# - remove variables that have less than 25% data
+# - use mean value instead of NA
+
+cleanup_var <- function(t) {
+    t_p <- t
+    nc <- length(t)
+    nr <- nrow(t)
+    l <- NULL
+    for (i in 1:nc) {
+        x <- !is.na(t[,i])
+        if (sum(x)/nr < 0.05) {
+                l <- append(l, i)
+        }
+                
+    }
+    t_p <- t[, -l]
+    return(t_p)
+}    
+
+training_p <- cleanup_var(training)
+testing_p <- cleanup_var(testing)
+
+impute_na <- function(t){
+        tp <- t
+        nc <- ncol(t)
+        for (i in 1:nc){
+                if (is.numeric(t[,i]) && sum(is.na(t[, i])) != 0) {
+                        tp[, i] <- impute(data.frame(t[, i]), what = "mean")
+                }
+        }
+        return(tp)
+}
+
+training_p <- impute_na(training_p)
+testing_p <- impute_na(testing_p)
+```
+
+The resulting pre-process resulted in the following dimensions:  
+- training set: **19622 observations of 60 variables **  
+- testing set: **20 observations of 60 variables **  
+
+```{r remove_nzv, echo=FALSE, results='hide'}
+set.seed(38833)
+library(caret)
+
+nzv <- nearZeroVar(training_p, saveMetrics = TRUE)
+nzv
+exclude <- c(1, 3, 4, 5, 6, 7)
+index <- grepl("^X|timestamp|window", names(training_p))
+training_p <- training_p[, -exclude]
+testing_p <- testing_p[, -exclude]
+```
+
+Also by looking at Near Zero Covariates, and removing other unrelated variables, the final training and testing was reduced to the following dimensions:  
+- training set: **19622 observations of 54 variables **  
+- testing set: **20 observations of 54 variables **  
+
+# Slicing and Cross-Validation  
+
+The cleaned training set is sliced into pure training data(75%) and a validation set(25%). The validation set is used to test the quality of the prediction model created by the training data.
+
+```{r sliceing_cv}
+  inTrain = createDataPartition(training_p$classe, p = 0.75, list = FALSE)
+  training_s <- training_p[inTrain,]
+  testing_s <- training_p[-inTrain,]
+```
+
+# Data Modeling  
+
+To create the prediction model, the ***Random Forest*** algorithm is used, as it is one of the most accurate learning algorithms, runs efficiently on large databases, and gives estimates of what variables are important in the classification. The **k-fold** cross validation method is used for splitting the dataset into k-subsets, where a value of ***5*** is used for **k**.  
+
+The validation set is then used to test the resulting model and determine its accuracy.  
+
+```{r model_fit, cache=TRUE}
+  
+  controlRf <- trainControl(method="cv", 5)
+  modelF <- train(factor(classe) ~ ., data = training_s, method = "rf", trControl=controlRf, ntree=250)
+  predict_vals <- predict(modelF, testing_s)
+  confusionMatrix(predict_vals, testing_s$classe)
+```
+# Results  
+Accuracy for Random Forest model was found to be 0.9939 (95% CI: (0.9913, 0.9959)). The expected out-of-sample error is estimated at 0.0061, or 0.61%. The expected out-of-sample error is calculated as (1 - accuracy) for predictions made against the cross-validation set. 
+
+The same model is then used to predict the values of the orignal test with *20 observations*, and the results dumped into individual files for submission purposes.
+
+```{r predict_final, cache=TRUE}
+  answers <- predict(modelF, testing_p[, -54])
+  
+  setwd("results")
+  pml_write_files = function(x){
+        n = length(x)
+        for(i in 1:n){
+                filename = paste0("problem_id_",i,".txt")
+                write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+        }
+  }
+  pml_write_files(answers)
+```
+
+#Appendix: *Plots*  
+
+```{r plots, echo=FALSE}
+  library(corrplot)
+  library(rpart)
+  library(rpart.plot)
+```
+
+## Correlation plots
+```{r corr_plot}
+  x <- c(1, 54)
+  cplot <- cor(training_s[, -x])
+  corrplot(cplot, method = "color", title="Correlation plot of the variables", tl.cex = 0.6, tl.col = "black", mar=c(0,0,1,0))
+```
+
+## Regression Tree
+```{r reg_tree}
+  modelT <- rpart(classe ~ ., data = training_s, method = "class")
+  #prp(modelT, type=4, extra=9)
+  prp(modelT, shadow.col = "gray", nn.col = 4, split.col = 2)
+```
+
+# Reference
+[1] Ugulino, W.; Cardador, D.; Vega, K.; Velloso, E.; Milidiu, R.; Fuks, H. Wearable Computing: Accelerometers' Data Classification of Body Postures and Movements. Proceedings of 21st Brazilian Symposium on Artificial Intelligence. Advances in Artificial Intelligence - SBIA 2012. In: Lecture Notes in Computer Science. , pp. 52-61. Curitiba, PR: Springer Berlin / Heidelberg, 2012. ISBN 978-3-642-34458-9. DOI: 10.1007/978-3-642-34459-6_6. 
+[2] Stephen Milborrow. rpart.plot: Plot rpart Models. An Enhanced Version of plot.rpart., 2011. R Package.
+
